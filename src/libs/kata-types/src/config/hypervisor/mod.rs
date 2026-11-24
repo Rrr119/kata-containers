@@ -2403,4 +2403,52 @@ mod tests {
             "logical > physical should be rejected"
         );
     }
+
+    #[test]
+    fn test_security_info_confidential_memory_defaults() {
+        // An empty security section must keep memory encryption disabled and
+        // preserve the documented SNP policy / QGS port defaults.
+        let security: SecurityInfo = toml::from_str("").unwrap();
+        assert!(!security.confidential_guest);
+        assert!(!security.sev_snp_guest);
+        assert_eq!(security.snp_guest_policy, default_snp_guest_policy());
+        assert_eq!(security.snp_guest_policy, 0x30000);
+        assert_eq!(security.qgs_port, default_qgs_port());
+        assert_eq!(security.qgs_port, 4050);
+    }
+
+    #[test]
+    fn test_security_info_confidential_memory_parsing() {
+        let toml_content = r#"
+            confidential_guest = true
+            sev_snp_guest = true
+            snp_guest_policy = 0x70000
+            tdx_quote_generation_service_socket_port = 5000
+            snp_id_block = "id-block"
+            snp_id_auth = "id-auth"
+        "#;
+        let security: SecurityInfo = toml::from_str(toml_content).unwrap();
+
+        assert!(security.confidential_guest);
+        assert!(security.sev_snp_guest);
+        assert_eq!(security.snp_guest_policy, 0x70000);
+        assert_eq!(security.qgs_port, 5000);
+        assert_eq!(security.snp_id_block, "id-block");
+        assert_eq!(security.snp_id_auth, "id-auth");
+    }
+
+    #[test]
+    fn test_security_info_sev_fallback_when_snp_disabled() {
+        // `sev_snp_guest = false` with confidential guests requested must be
+        // parseable; the runtime then reverts to plain SEV on SNP-capable hosts.
+        let security: SecurityInfo = toml::from_str(
+            r#"
+            confidential_guest = true
+            sev_snp_guest = false
+            "#,
+        )
+        .unwrap();
+        assert!(security.confidential_guest);
+        assert!(!security.sev_snp_guest);
+    }
 }

@@ -4850,4 +4850,159 @@ mod tests {
             machine_value
         );
     }
+
+    // Returns the value paired with `-object` whose first comma-separated token
+    // matches `object_type` (e.g. "sev-guest", "sev-snp-guest").
+    fn find_object<'a>(params: &'a [String], object_type: &str) -> Option<&'a str> {
+        params.windows(2).find_map(|args| {
+            (args[0] == "-object" && args[1].split(',').next() == Some(object_type))
+                .then_some(args[1].as_str())
+        })
+    }
+
+    fn machine_value(params: &[String]) -> &str {
+        params
+            .windows(2)
+            .find_map(|args| (args[0] == "-machine").then_some(args[1].as_str()))
+            .expect("-machine argument must be present")
+    }
+
+    // Checks a single comma-separated QEMU object value (e.g. the second token
+    // of `-object sev-guest,cbitpos=47,...`) for an exact `key=value` entry.
+    fn object_has_param(object_value: &str, expected: &str) -> bool {
+        object_value.split(',').any(|param| param == expected)
+    }
+
+    #[actix_rt::test]
+    #[serial]
+    async fn test_sev_protection_device_cmdline() {
+        let config = test_qemu_config(Some("none"), false);
+        let _ = std::fs::remove_file(QMP_SOCKET_FILE);
+        let mut cmdline = QemuCmdLine::new("sev-protection", &config).unwrap();
+        cmdline.add_sev_protection_device(47, 5, "/usr/share/ovmf/OVMF.fd");
+        let params = cmdline.build().await.unwrap();
+        let _ = std::fs::remove_file(QMP_SOCKET_FILE);
+
+        // The memory-encryption object must describe a plain SEV guest with the
+        // C-bit position and physical-address reduction reported by CPUID.
+        let sev_object = find_object(&params, "sev-guest")
+            .expect("SEV memory-encryption object must be present");
+        assert!(object_has_param(sev_object, "id=sev"));
+        assert!(object_has_param(sev_object, "cbitpos=47"));
+        assert!(object_has_param(sev_object, "reduced-phys-bits=5"));
+
+        // Plain SEV must not carry SEV-SNP-only parameters.
+        assert!(!sev_object.contains("kernel-hashes="));
+        assert!(!sev_object.contains("policy="));
+        assert!(find_object(&params, "sev-snp-guest").is_none());
+
+        // The confidential firmware is loaded through `-bios` and the machine
+        // wires the encryption object up via confidential-guest-support.
+        assert!(has_qemu_arg(&params, "-bios", "/usr/share/ovmf/OVMF.fd"));
+        let machine = machine_value(&params);
+        assert!(
+            machine.contains("confidential-guest-support=sev"),
+            "machine must reference the SEV object, got: {machine}",
+            machine = machine
+        );
+    }
+
+    #[actix_rt::test]
+    #[serial]
+    async fn test_sev_snp_protection_device_cmdline() {
+        let mut config = test_qemu_config(Some("none"), false);
+        config.security_info.confidential_guest = true;
+        config.security_info.snp_guest_policy = 0x30000;
+        let _ = std::fs::remove_file(QMP_SOCKET_FILE);
+        let mut cmdline = QemuCmdLine::new("snp-protection", &config).unwrap();
+        cmdline.add_sev_snp_protection_device(
+            51,
+            1,
+            "/usr/share/ovmf/OVMF.fd",
+            &Some("aG9zdC1kYXRh".to_owned()),
+        );
+        let params = cmdline.build().await.unwrap();
+        let _ = std::fs::remove_file(QMP_SOCKET_FILE);
+
+        let snp_object = find_object(&params, "sev-snp-guest")
+            .expect("SEV-SNP memory-encryption object must be present");
+        assert!(object_has_param(snp_object, "id=snp"));
+        assert!(object_has_param(snp_object, "cbitpos=51"));
+        assert!(object_has_param(snp_object, "reduced-phys-bits=1"));
+        assert!(object_has_param(snp_object, "kernel-hashes=on"));
+        assert!(object_has_param(snp_object, "policy=0x30000"));
+        assert!(object_has_param(snp_object, "host-data=aG9zdC1kYXRh"));
+        assert!(find_object(&params, "sev-guest").is_none());
+
+        assert!(has_qemu_arg(&params, "-bios", "/usr/share/ovmf/OVMF.fd"));
+
+        let machine = machine_value(&params);
+        assert!(
+            machine.contains("confidential-guest-support=snp"),
+            "machine must reference the SNP object, got: {machine}",
+            machine = machine
+        );
+        assert!(
+            machine.contains("kernel_irqchip=split"),
+            "SEV-SNP requires split irqchip, got: {machine}",
+            machine = machine
+        );
+
+        // Confidential guests cannot hot-plug memory, so no slots/maxmem are
+        // emitted on `-m` and SEV-SNP additionally forces them back to zero.
+        let memory_value = params
+            .windows(2)
+            .find_map(|args| (args[0] == "-m").then_some(args[1].as_str()))
+            .expect("-m argument must be present");
+        assert!(
+            !memory_value.contains("slots=") && !memory_value.contains("maxmem="),
+            "confidential guests must not reserve a memory-hotplug region, got: {memory_value}",
+            memory_value = memory_value
+        );
+    }
+
+    #[actix_rt::test]
+    #[serial]
+    async fn test_tdx_protection_device_cmdline() {
+        let config = test_qemu_config(Some("none"), false);
+        let _ = std::fs::remove_file(QMP_SOCKET_FILE);
+        let mut cmdline = QemuCmdLine::new("tdx-protection", &config).unwrap();
+        cmdline.add_tdx_protection_device(
+            "tdx",
+            "/usr/share/ovmf/OVMF.fd",
+            4050,
+            &Some("bXJjb25maWdpZA==".to_owned()),
+            false,
+        );
+        let params = cmdline.build().await.unwrap();
+        let _ = std::fs::remove_file(QMP_SOCKET_FILE);
+
+        // The TDX object is emitted as a JSON `-object` describing a tdx-guest.
+        let tdx_object = params
+            .windows(2)
+            .find_map(|args| {
+                (args[0] == "-object" && args[1].contains("\"qom-type\":\"tdx-guest\""))
+                    .then_some(args[1].as_str())
+            })
+            .expect("TDX memory-encryption object must be present");
+        assert!(tdx_object.contains("\"id\":\"tdx\""));
+        assert!(tdx_object.contains("\"sept-ve-disable\":true"));
+        assert!(tdx_object.contains("\"mrconfigid\":\"bXJjb25maWdpZA==\""));
+        assert!(tdx_object.contains("\"quote-generation-socket\":"));
+        assert!(!tdx_object.contains("\"debug\":"));
+
+        assert!(has_qemu_arg(&params, "-bios", "/usr/share/ovmf/OVMF.fd"));
+
+        let machine = machine_value(&params);
+        assert!(
+            machine.contains("confidential-guest-support=tdx"),
+            "machine must reference the TDX object, got: {machine}",
+            machine = machine
+        );
+        assert!(
+            machine.contains("kernel_irqchip=split"),
+            "TDX requires split irqchip, got: {machine}",
+            machine = machine
+        );
+    }
 }

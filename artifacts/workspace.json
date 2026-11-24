@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid36762",
+  "B": "/home/dev/feedback/uid36762",
+  "sha": "ce9368b8f27125b130ac6cc65b7a7ce1408b22fb",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "kata-containers",
+    "repo": "kata-containers",
+    "sha": "ce9368b8f27125b130ac6cc65b7a7ce1408b22fb"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "kata-containers",
+    "cloneUrl": "https://github.com/Rrr119/kata-containers.git"
+  },
+  "at": "2026-11-24T03:56:14.678Z"
+}
